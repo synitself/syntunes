@@ -881,9 +881,6 @@ class SyntunesBot:
                 description_parts.append(f"ταgs")
                 description_parts.append(f"{type_data['tags']}")
 
-        description_parts.append(f"")
-        description_parts.append(f"#music #visualizer #syntunes")
-
         return '\n'.join(description_parts)
 
     def generate_youtube_title(self, session):
