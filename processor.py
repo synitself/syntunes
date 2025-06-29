@@ -5,15 +5,13 @@ import os
 import librosa
 from settings import *
 
-
 def get_audio_metadata(audio_path):
     """
-    � звлекает метаданные из аудиофайла
+    Извлекает метаданные из аудиофайла
     """
     try:
         from mutagen import File
         audio_file = File(audio_path)
-
         if audio_file is not None:
             # Получаем исполнителя
             artist = ""
@@ -38,14 +36,12 @@ def get_audio_metadata(audio_path):
             title = title.replace('γ', 'y')
 
             return artist or "Unknown Artist", title or "Unknown Title"
-
     except ImportError:
         print("Для извлечения метаданных установите mutagen: pip install mutagen")
     except Exception as e:
         print(f"Ошибка при извлечении метаданных: {e}")
 
     return "Unknown Artist", "Unknown Title"
-
 
 def load_font(size=36):
     """
@@ -59,7 +55,6 @@ def load_font(size=36):
             return ImageFont.load_default()
         except:
             return None
-
 
 def create_thumbnail(image_path, output_path):
     """
@@ -77,23 +72,20 @@ def create_thumbnail(image_path, output_path):
     # Применяем эффект порога
     processed_img = apply_ultra_hard_threshold_effect(img, 0)
 
-    # � азмещаем в центре
+    # Размещаем в центре
     img_width, img_height = processed_img.size
     x = (1280 - img_width) // 2
     y = (720 - img_height) // 2
-
     thumbnail.paste(processed_img, (x, y))
 
     # Сохраняем как JPG с качеством 95%
     thumbnail.save(output_path, 'JPEG', quality=95, optimize=True)
     print(f"Обложка YouTube сохранена: {output_path} (1280x720)")
 
-
 def create_text_blocks(artist, title):
     """
     Создает два отдельных блока текста с улучшенной обработкой высоты
     """
-
     def create_single_text_block(text):
         font_size = 200
         best_font = None
@@ -131,10 +123,10 @@ def create_text_blocks(artist, title):
             temp_img = Image.new('RGB', (best_text_w + margin_x, best_text_h + margin_y), (255, 255, 255))
             temp_draw = ImageDraw.Draw(temp_img)
 
-            # � исуем текст с увеличенными отступами
+            # Рисуем текст с увеличенными отступами
             temp_draw.text((margin_x // 2, margin_y // 2), text, fill=(0, 0, 0), font=best_font)
 
-            # � астягиваем до нужного размера
+            # Растягиваем до нужного размера
             stretched_text = temp_img.resize((TEXT_BLOCK_WIDTH, TEXT_LINE_HEIGHT), Image.Resampling.LANCZOS)
 
             print(f"Блок '{text}' создан: {best_text_w}x{best_text_h} -> {TEXT_BLOCK_WIDTH}x{TEXT_LINE_HEIGHT}")
@@ -154,7 +146,6 @@ def create_text_blocks(artist, title):
 
     return artist_block, title_block
 
-
 def calculate_fade_in_progress(current_time, bpm, beats_per_loop=BEATS_PER_LOOP):
     """
     Вычисляет прогресс выплывания элементов (0.0 - полностью скрыто, 1.0 - полностью видно)
@@ -166,7 +157,6 @@ def calculate_fade_in_progress(current_time, bpm, beats_per_loop=BEATS_PER_LOOP)
         return 1.0
 
     return current_time / fade_duration
-
 
 def apply_fade_in_effect(img, fade_progress):
     """
@@ -191,9 +181,7 @@ def apply_fade_in_effect(img, fade_progress):
 
     # Смешиваем
     result = Image.alpha_composite(white_rgba.convert('RGBA'), img_rgba)
-
     return result.convert('RGB')
-
 
 def apply_group_shake_effect(base_size, amplitude, group_type="default"):
     """
@@ -210,11 +198,11 @@ def apply_group_shake_effect(base_size, amplitude, group_type="default"):
 
     size_multiplier = 1.0 + amplitude * multiplier
     new_size = int(base_size * size_multiplier)
+
     return new_size, size_multiplier
 
-
 def create_waveform_visualization(audio_data, current_time, sample_rate, width=VISUALIZATION_WIDTH,
-                                  height=VISUALIZATION_HEIGHT_WAVEFORM):
+                                height=VISUALIZATION_HEIGHT_WAVEFORM):
     img = Image.new('RGB', (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
@@ -233,24 +221,25 @@ def create_waveform_visualization(audio_data, current_time, sample_rate, width=V
             waveform_data = waveform_data[::step][:width]
 
         center_y = height // 2
+
         for i, sample in enumerate(waveform_data):
             y_offset = int(sample * center_y * 0.8)
             y1 = center_y - y_offset
             y2 = center_y + y_offset
             draw.line([(i, y1), (i, y2)], fill=(0, 0, 0), width=1)
 
-        center_x = width // 2
-        draw.line([(center_x, 0), (center_x, height)], fill=(255, 0, 0), width=2)
+    center_x = width // 2
+    draw.line([(center_x, 0), (center_x, height)], fill=(255, 0, 0), width=2)
 
     return img
 
-
 def create_spectrum_visualization(audio_data, current_time, sample_rate, width=VISUALIZATION_WIDTH,
-                                  height=VISUALIZATION_HEIGHT_SPECTRUM):
+                                height=VISUALIZATION_HEIGHT_SPECTRUM):
     img = Image.new('RGB', (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    window_samples = int(0.1 * sample_rate)
+    # Увеличиваем размер окна для лучшего частотного разрешения
+    window_samples = int(0.2 * sample_rate)  # Увеличено с 0.1 до 0.2
     current_sample = int(current_time * sample_rate)
 
     start_sample = max(0, current_sample - window_samples // 2)
@@ -259,55 +248,97 @@ def create_spectrum_visualization(audio_data, current_time, sample_rate, width=V
     if end_sample > start_sample:
         window_data = audio_data[start_sample:end_sample]
 
+        # Применяем окно Хэмминга для уменьшения спектральных утечек
         windowed = window_data * np.hamming(len(window_data))
-        fft = np.abs(np.fft.rfft(windowed))
 
-        # Улучшенная обработка АЧХ для предотвращения обрезания
+        # Увеличиваем размер FFT для лучшего разрешения
+        n_fft = max(2048, len(windowed))
+        fft = np.abs(np.fft.rfft(windowed, n=n_fft))
+
         if len(fft) > 0:
-            # Применяем логарифмическое масштабирование с улучшенным диапазоном
-            fft_db = 20 * np.log10(fft + 1e-10)
+            # Улучшенная обработка с защитой от нулевых значений
+            fft_safe = np.maximum(fft, 1e-12)  # Более консервативная защита
+            fft_db = 20 * np.log10(fft_safe)
 
-            # Адаптивная нормализация - используем процентили вместо фиксированных значений
-            min_db = np.percentile(fft_db, 5)  # 5-й процентиль как минимум
-            max_db = np.percentile(fft_db, 95)  # 95-й процентиль как максимум
+            # Более точная адаптивная нормализация
+            # Используем медиану для более стабильной нормализации
+            median_db = np.median(fft_db)
+            mad = np.median(np.abs(fft_db - median_db))  # Median Absolute Deviation
 
-            # � асширяем диапазон для лучшей видимости
-            db_range = max_db - min_db
+            # Определяем диапазон на основе медианы и MAD
+            min_db = median_db - 3 * mad
+            max_db = median_db + 4 * mad  # Чуть больше места для пиков
+
+            # Альтернативно используем процентили с большим запасом
+            percentile_min = np.percentile(fft_db, 2)   # 2-й процентиль
+            percentile_max = np.percentile(fft_db, 98)  # 98-й процентиль
+
+            # Выбираем более консервативные границы
+            final_min = min(min_db, percentile_min)
+            final_max = max(max_db, percentile_max)
+
+            # Добавляем дополнительный запас для предотвращения обрезания
+            db_range = final_max - final_min
             if db_range > 0:
-                # Нормализуем с запасом сверху и снизу
-                fft_normalized = np.clip((fft_db - min_db + db_range * 0.1) / (db_range * 1.2), 0, 1)
-            else:
-                fft_normalized = np.zeros_like(fft_db)
+                # Расширяем диапазон на 20% сверху и 10% снизу
+                extended_min = final_min - db_range * 0.1
+                extended_max = final_max + db_range * 0.2
 
-            # Применяем сглаживание для более плавного отображения
-            if len(fft_normalized) > 3:
+                # Нормализуем в диапазон [0, 1] с мягким ограничением
+                fft_normalized = (fft_db - extended_min) / (extended_max - extended_min)
+                # Применяем сигмоидальное ограничение вместо жесткого clip
+                fft_normalized = 1 / (1 + np.exp(-6 * (fft_normalized - 0.5)))
+            else:
+                fft_normalized = np.full_like(fft_db, 0.5)
+
+            # Улучшенное сглаживание
+            if len(fft_normalized) > 5:
                 try:
                     from scipy import ndimage
-                    fft_normalized = ndimage.gaussian_filter1d(fft_normalized, sigma=0.5)
+                    # Применяем двухэтапное сглаживание
+                    fft_normalized = ndimage.gaussian_filter1d(fft_normalized, sigma=0.8)
+                    # Дополнительное медианное сглаживание для устранения выбросов
+                    fft_normalized = ndimage.median_filter(fft_normalized, size=3)
                 except ImportError:
-                    pass  # Если scipy не установлена, пропускаем сглаживание
+                    # Простое скользящее среднее если scipy недоступна
+                    kernel_size = 3
+                    kernel = np.ones(kernel_size) / kernel_size
+                    fft_normalized = np.convolve(fft_normalized, kernel, mode='same')
 
-            # Подготавливаем данные для отображения
+            # Подготовка данных для отображения с логарифмическим распределением
             if len(fft_normalized) > width:
-                # Логарифмическое распределение частот для лучшего отображения
-                indices = np.logspace(0, np.log10(len(fft_normalized) - 1), width).astype(int)
-                fft_display = fft_normalized[indices]
+                # Улучшенное логарифмическое распределение частот
+                # Больше деталей в низких частотах, где обычно больше энергии
+                log_indices = np.logspace(0, np.log10(len(fft_normalized) - 1), width * 2)
+                # Применяем дополнительную интерполацию для сглаживания
+                fft_interpolated = np.interp(log_indices, np.arange(len(fft_normalized)), fft_normalized)
+                # Берем каждый второй элемент для финального массива
+                fft_display = fft_interpolated[::2][:width]
             else:
                 fft_display = fft_normalized
 
-            # � исуем спектр с улучшенным масштабированием
+            # Рисуем спектр с улучшенным отображением
             for i, magnitude in enumerate(fft_display):
-                # � спользуем больший коэффициент высоты и добавляем минимальную высоту
-                bar_height = max(int(magnitude * height * 0.95), 1)  # минимум 1 пиксель
+                # Используем нелинейное масштабирование для лучшей видимости
+                # Применяем степенную функцию для выделения пиков
+                enhanced_magnitude = np.power(magnitude, 0.7)  # Корень для выделения слабых сигналов
 
-                # � исуем от низа вверх
+                # Вычисляем высоту с гарантированным минимумом и максимумом
+                bar_height = max(int(enhanced_magnitude * height * 0.98), 1)
+                bar_height = min(bar_height, height - 1)  # Гарантируем что не выходим за границы
+
+                # Рисуем от низа вверх с дополнительной толщиной для лучшей видимости
                 y_start = height - 1
-                y_end = max(0, height - bar_height)
+                y_end = height - bar_height
 
-                draw.line([(i, y_start), (i, y_end)], fill=(0, 0, 0), width=1)
+                # Рисуем линию с переменной толщиной в зависимости от амплитуды
+                line_width = max(1, int(enhanced_magnitude * 2))
+
+                for w in range(line_width):
+                    if i + w < width:
+                        draw.line([(i + w, y_start), (i + w, y_end)], fill=(0, 0, 0), width=1)
 
     return img
-
 
 def smooth_amplitudes(amplitudes, window_size=SMOOTHING_WINDOW_SIZE):
     smoothed = []
@@ -317,7 +348,6 @@ def smooth_amplitudes(amplitudes, window_size=SMOOTHING_WINDOW_SIZE):
         window = amplitudes[start:end]
         smoothed.append(sum(window) / len(window))
     return smoothed
-
 
 def apply_exponential_smoothing(amplitudes, alpha=SMOOTHING_ALPHA):
     if not amplitudes:
@@ -330,7 +360,6 @@ def apply_exponential_smoothing(amplitudes, alpha=SMOOTHING_ALPHA):
 
     return smoothed
 
-
 def calculate_gif_timing(bpm, beats_per_loop=BEATS_PER_LOOP):
     beats_per_second = bpm / 60.0
     seconds_per_beat = 1.0 / beats_per_second
@@ -339,9 +368,9 @@ def calculate_gif_timing(bpm, beats_per_loop=BEATS_PER_LOOP):
     print(f"Синхронизация GIF: {beats_per_loop} ударов = {seconds_per_loop:.3f} секунд")
     return seconds_per_loop
 
-
 def add_white_square_background(img, size=1080):
     width, height = img.size
+
     if width == height == size:
         return img
 
@@ -355,14 +384,12 @@ def add_white_square_background(img, size=1080):
     background.paste(img, (x, y))
     return background
 
-
 def resize_gif_frame(frame, target_width=GIF_BASE_WIDTH):
     width, height = frame.size
     aspect_ratio = height / width
     target_height = int(target_width * aspect_ratio)
 
     return frame.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
 
 def load_gif_frames(target_width=GIF_BASE_WIDTH):
     """
@@ -376,7 +403,6 @@ def load_gif_frames(target_width=GIF_BASE_WIDTH):
 
     gif = Image.open(gif_path)
     frames = []
-
     transparency = gif.info.get('transparency', None)
 
     try:
@@ -390,7 +416,7 @@ def load_gif_frames(target_width=GIF_BASE_WIDTH):
                     current_frame = current_frame.convert('RGBA')
                 else:
                     current_frame = current_frame.convert('RGB')
-                    current_frame = current_frame.convert('RGBA')
+                current_frame = current_frame.convert('RGBA')
 
             if transparency is not None:
                 data = np.array(current_frame)
@@ -411,13 +437,12 @@ def load_gif_frames(target_width=GIF_BASE_WIDTH):
 
     return frames
 
-
 def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_per_loop=BEATS_PER_LOOP):
     print("Загружаю аудио для визуализаций...")
     audio_mono, sr = librosa.load(audio_path, sr=AUDIO_SAMPLE_RATE, mono=True)
 
     artist, title = get_audio_metadata(audio_path)
-    print(f"� сполнитель: {artist}")
+    print(f"Исполнитель: {artist}")
     print(f"Название: {title}")
     print(f"Качество аудио: {sr} Гц")
 
@@ -443,7 +468,6 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
         try:
             start_time = max(0, t - 0.005)
             end_time = min(duration, t + 0.005)
-
             if end_time > start_time:
                 volume = audio_clip.subclip(start_time, end_time).max_volume()
             else:
@@ -491,7 +515,6 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
         img_width, img_height = processed_img.size
         x = (1920 - img_width) // 2
         y = (1080 - img_height) // 2
-
         frame.paste(processed_img, (x, y))
 
         # Группа 2: Визуализации с эффектом выплывания
@@ -512,6 +535,7 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
         # GIF с эффектом выплывания
         current_gif_frame = None
         gif_height = vis_size_h_wave
+
         if gif_frames:
             cycle_position = (t % gif_loop_duration) / gif_loop_duration
             gif_frame_index = int(cycle_position * len(gif_frames)) % len(gif_frames)
@@ -523,20 +547,19 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
             current_gif_frame = current_gif_frame.resize((new_gif_w, new_gif_h), Image.Resampling.LANCZOS)
             gif_height = new_gif_h
 
-        # � азмещение визуализаций
+        # Размещение визуализаций
         total_height = vis_size_h_spec + 20 + vis_size_h_wave + 20 + gif_height
         center_screen = 540
         start_y = center_screen - (total_height // 2)
-
         vis_x = 20
+
         current_y = start_y
-
         frame.paste(spectrum_faded, (vis_x, current_y))
+
         current_y += vis_size_h_spec + 20
-
         frame.paste(waveform_faded, (vis_x, current_y))
-        current_y += vis_size_h_wave + 20
 
+        current_y += vis_size_h_wave + 20
         if gif_frames and current_gif_frame:
             processed_gif = apply_ultra_hard_threshold_effect(current_gif_frame, amplitude)
             gif_faded = apply_fade_in_effect(processed_gif, fade_progress)
@@ -568,7 +591,7 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
         # X позиция справа
         text_x = 1920 - text_size_w - 20
 
-        # � азмещаем блоки
+        # Размещаем блоки
         frame.paste(artist_faded, (text_x, artist_y))
         frame.paste(title_faded, (text_x, title_y))
 
@@ -581,13 +604,12 @@ def create_audio_visualizer(audio_path, image_path, output_path, bpm=BPM, beats_
     final_clip = video_clip.set_audio(audio_clip)
 
     final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac',
-                               verbose=False, logger=None, temp_audiofile='temp-audio.m4a',
-                               remove_temp=True)
+                              verbose=False, logger=None, temp_audiofile='temp-audio.m4a',
+                              remove_temp=True)
 
     video_clip.close()
     final_clip.close()
     audio_clip.close()
-
 
 def apply_ultra_hard_threshold_effect(img, amplitude):
     img_array = np.array(img)
@@ -597,14 +619,12 @@ def apply_ultra_hard_threshold_effect(img, amplitude):
     enhanced_gray = np.clip(gray * (CONTRAST_BASE + amplitude * CONTRAST_AMPLITUDE_MULTIPLIER), 0, 255)
 
     dark_mask = enhanced_gray < threshold_value
-
     result = np.full_like(img_array, 255)
     result[dark_mask] = [0, 0, 0]
 
     return Image.fromarray(result.astype(np.uint8))
 
-
-def extract_album_art(audio_path):
+def extract_album_art(audio_path, user_dir):
     try:
         from mutagen import File
         audio_file = File(audio_path)
@@ -617,12 +637,11 @@ def extract_album_art(audio_path):
                     if key.startswith('APIC'):
                         artwork_data = audio_file.tags[key].data
                         break
-
             elif hasattr(audio_file, 'pictures') and audio_file.pictures:
                 artwork_data = audio_file.pictures[0].data
 
             if artwork_data:
-                temp_cover_path = 'temp_cover.jpg'
+                temp_cover_path = f'{user_dir}/temp_cover.jpg'
                 with open(temp_cover_path, 'wb') as f:
                     f.write(artwork_data)
                 return temp_cover_path
@@ -634,13 +653,12 @@ def extract_album_art(audio_path):
 
     return None
 
-
 if __name__ == "__main__":
-    print("=== АУД� ОВ� ЗУАЛ� ЗАТО�  С WAVEFORM ===")
+    print("=== АУДИОВИЗУАЛИЗАТОР С WAVEFORM ===")
 
     audio_file = input("Путь к аудиофайлу: ").strip() or AUDIO_FILE
     image_file = input("Путь к изображению (Enter для автоизвлечения): ").strip() or IMAGE_FILE
-    output_file = input("� мя выходного файла (Enter = visualizer_output.mp4): ").strip() or OUTPUT_FILE
+    output_file = input("Имя выходного файла (Enter = visualizer_output.mp4): ").strip() or OUTPUT_FILE
 
     try:
         bpm_input = input(f"BPM трека (Enter = {BPM}): ").strip()
@@ -661,17 +679,17 @@ if __name__ == "__main__":
         exit(1)
 
     if not os.path.exists(image_file):
-        extracted_cover = extract_album_art(audio_file)
+        extracted_cover = extract_album_art(audio_file, ".")
         if extracted_cover:
             image_file = extracted_cover
-            print(f"� спользую извлеченную обложку: {extracted_cover}")
+            print(f"Использую извлеченную обложку: {extracted_cover}")
         else:
             print(f"Файл изображения не найден: {image_file}")
             exit(1)
 
     print(f"\nПараметры:")
     print(f"- Аудио: {audio_file}")
-    print(f"- � зображение: {image_file}")
+    print(f"- Изображение: {image_file}")
     print(f"- GIF: {GIF_FILE}")
     print(f"- Шрифт: {FONT_FILE}")
     print(f"- BPM: {bpm}")
