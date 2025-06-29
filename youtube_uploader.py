@@ -1,315 +1,255 @@
 import os
 import json
-from datetime import datetime
+import logging
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
-import pickle
-from PIL import Image, ImageDraw, ImageFont
-import logging
+from googleapiclient.http import MediaFileUpload
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube']
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 
 
-def get_authenticated_service(credentials_file):
-    creds = None
-    token_file = 'token.pickle'
+class YouTubeUploader:
+    def __init__(self, credentials_file):
+        self.credentials_file = credentials_file
 
-    if os.path.exists(token_file):
-        with open(token_file, 'rb') as token:
-            creds = pickle.load(token)
+    def create_auth_url(self, user_id):
+        """Создает URL для авторизации пользователя"""
+        try:
+            os.makedirs('tokens', exist_ok=True)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-            creds = flow.run_local_server(port=0)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                self.credentials_file,
+                SCOPES
+            )
+            flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
 
-        with open(token_file, 'wb') as token:
-            pickle.dump(creds, token)
+            auth_url, _ = flow.authorization_url(
+                prompt='consent',
+                access_type='offline',
+                include_granted_scopes='true',
+                state=str(user_id)
+            )
 
-    return build('youtube', 'v3', credentials=creds)
+            logger.info(f"Создан URL авторизации: {auth_url}")
 
+            with open(self.credentials_file, 'r') as f:
+                client_config = json.load(f)
 
-def get_playlist_id_by_name(youtube, playlist_name):
-    """Получает ID плейлиста по названию"""
-    try:
-        request = youtube.playlists().list(
-            part="snippet",
-            mine=True,
-            maxResults=50
-        )
-        response = request.execute()
+            flow_data = {
+                'client_config': client_config,
+                'scopes': SCOPES,
+                'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
+                'state': str(user_id)
+            }
 
-        for playlist in response.get('items', []):
-            if playlist['snippet']['title'].lower() == playlist_name.lower():
-                return playlist['id']
+            flow_file = f'tokens/flow_{user_id}.json'
+            with open(flow_file, 'w') as f:
+                json.dump(flow_data, f)
 
-        logger.warning(f"Плейлист '{playlist_name}' не найден")
-        return None
+            return auth_url
 
-    except Exception as e:
-        logger.error(f"Ошибка получения плейлиста: {e}")
-        return None
+        except Exception as e:
+            logger.error(f"Ошибка создания URL авторизации: {e}")
+            return None
 
+    def complete_auth(self, user_id, auth_code):
+        """Завершает авторизацию с полученным кодом"""
+        try:
+            flow_file = f'tokens/flow_{user_id}.json'
 
-def add_video_to_playlist(youtube, video_id, playlist_id):
-    """Добавляет видео в плейлист"""
-    try:
-        request = youtube.playlistItems().insert(
-            part="snippet",
-            body={
-                "snippet": {
-                    "playlistId": playlist_id,
-                    "resourceId": {
-                        "kind": "youtube#video",
-                        "videoId": video_id
-                    }
+            if not os.path.exists(flow_file):
+                logger.error(f"Файл flow не найден: {flow_file}")
+                return False
+
+            with open(flow_file, 'r') as f:
+                flow_data = json.load(f)
+
+            flow = InstalledAppFlow.from_client_config(
+                flow_data['client_config'],
+                flow_data['scopes']
+            )
+            flow.redirect_uri = flow_data['redirect_uri']
+
+            flow.fetch_token(code=auth_code)
+
+            token_file = f'tokens/token_{user_id}.json'
+            with open(token_file, 'w') as f:
+                f.write(flow.credentials.to_json())
+
+            os.remove(flow_file)
+
+            logger.info(f"Авторизация завершена для пользователя {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка завершения авторизации: {e}")
+            return False
+
+    def get_credentials(self, user_id):
+        """Получает действительные учетные данные для пользователя"""
+        token_file = f'tokens/token_{user_id}.json'
+
+        creds = None
+        if os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    with open(token_file, 'w') as f:
+                        f.write(creds.to_json())
+                except Exception as e:
+                    logger.error(f"Ошибка обновления токена: {e}")
+                    return None
+            else:
+                return None
+
+        return creds
+
+    def upload_video(self, user_id, video_path, title, description="", tags=None, privacy_status="private"):
+        """Загружает видео на YouTube"""
+        try:
+            creds = self.get_credentials(user_id)
+            if not creds:
+                logger.error(f"Нет действительных учетных данных для пользователя {user_id}")
+                return None
+
+            youtube = build('youtube', 'v3', credentials=creds)
+
+            if not os.path.exists(video_path):
+                logger.error(f"Файл видео не найден: {video_path}")
+                return None
+
+            tags_list = tags if tags else []
+
+            body = {
+                'snippet': {
+                    'title': title,
+                    'description': description,
+                    'tags': tags_list,
+                    'categoryId': '22'
+                },
+                'status': {
+                    'privacyStatus': privacy_status,
+                    'selfDeclaredMadeForKids': False
                 }
             }
-        )
-        response = request.execute()
-        logger.info(f"Видео {video_id} добавлено в плейлист {playlist_id}")
-        return True
 
-    except Exception as e:
-        logger.error(f"Ошибка добавления видео в плейлист: {e}")
+            media = MediaFileUpload(
+                video_path,
+                chunksize=-1,
+                resumable=True,
+                mimetype='video/*'
+            )
+
+            insert_request = youtube.videos().insert(
+                part=','.join(body.keys()),
+                body=body,
+                media_body=media
+            )
+
+            response = None
+            error = None
+            retry = 0
+
+            while response is None:
+                try:
+                    status, response = insert_request.next_chunk()
+                    if status:
+                        logger.info(f"Загружено {int(status.progress() * 100)}%")
+                except HttpError as e:
+                    if e.resp.status in [500, 502, 503, 504]:
+                        error = f"Ошибка сервера {e.resp.status}: {e}"
+                        retry += 1
+                        if retry > 3:
+                            logger.error(f"Превышено количество попыток: {error}")
+                            return None
+                    else:
+                        logger.error(f"HTTP ошибка: {e}")
+                        return None
+                except Exception as e:
+                    logger.error(f"Неожиданная ошибка: {e}")
+                    return None
+
+            if response:
+                video_id = response.get('id')
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                logger.info(f"Видео успешно загружено: {video_url}")
+                return {
+                    'video_id': video_id,
+                    'video_url': video_url,
+                    'title': title
+                }
+
+        except Exception as e:
+            logger.error(f"Ошибка загрузки видео: {e}")
+            return None
+
+    def is_authorized(self, user_id):
+        """Проверяет, авторизован ли пользователь"""
+        return self.get_credentials(user_id) is not None
+
+    def revoke_authorization(self, user_id):
+        """Отзывает авторизацию пользователя"""
+        try:
+            token_file = f'tokens/token_{user_id}.json'
+            if os.path.exists(token_file):
+                os.remove(token_file)
+                logger.info(f"Авторизация отозвана для пользователя {user_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Ошибка отзыва авторизации: {e}")
         return False
 
 
-def create_thumbnail(cover_path, output_path, bpm, artist):
-    try:
-        if not os.path.exists(cover_path):
-            logger.warning(f"Обложка не найдена: {cover_path}")
-            return None
+def create_auth_url(credentials_file, user_id):
+    """Создает URL для авторизации пользователя"""
+    uploader = YouTubeUploader(credentials_file)
+    return uploader.create_auth_url(user_id)
 
-        img = Image.open(cover_path).convert('RGB')
-        img = img.resize((1280, 720), Image.Resampling.LANCZOS)
 
-        draw = ImageDraw.Draw(img)
+def complete_auth(credentials_file, user_id, auth_code):
+    """Завершает авторизацию с полученным кодом"""
+    uploader = YouTubeUploader(credentials_file)
+    return uploader.complete_auth(user_id, auth_code)
 
-        try:
-            font_large = ImageFont.truetype("arial.ttf", 60)
-            font_medium = ImageFont.truetype("arial.ttf", 40)
-        except:
-            font_large = ImageFont.load_default()
-            font_medium = ImageFont.load_default()
 
-        bpm_text = f"BPM: {bpm}"
-        artist_text = f"by {artist}"
+def upload_video(credentials_file, user_id, video_path, title, description="", tags=None, privacy_status="private"):
+    """Загружает видео на YouTube"""
+    uploader = YouTubeUploader(credentials_file)
+    return uploader.upload_video(user_id, video_path, title, description, tags, privacy_status)
 
-        text_bbox = draw.textbbox((0, 0), bpm_text, font=font_large)
-        text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
 
-        x = (1280 - text_width) // 2
-        y = 50
+def upload_to_youtube_scheduled(video_path, title, description="", tags=None, privacy_status="private", user_id=None):
+    """Функция для запланированной загрузки видео на YouTube"""
+    credentials_file = 'client_secrets.json'
 
-        draw.rectangle([x - 10, y - 10, x + text_width + 10, y + text_height + 10], fill=(0, 0, 0, 180))
-        draw.text((x, y), bpm_text, fill=(255, 255, 255), font=font_large)
-
-        artist_bbox = draw.textbbox((0, 0), artist_text, font=font_medium)
-        artist_width = artist_bbox[2] - artist_bbox[0]
-        artist_height = artist_bbox[3] - artist_bbox[1]
-
-        x_artist = (1280 - artist_width) // 2
-        y_artist = 720 - artist_height - 50
-
-        draw.rectangle([x_artist - 10, y_artist - 10, x_artist + artist_width + 10, y_artist + artist_height + 10],
-                       fill=(0, 0, 0, 180))
-        draw.text((x_artist, y_artist), artist_text, fill=(255, 255, 255), font=font_medium)
-
-        img.save(output_path, 'JPEG', quality=95)
-        return output_path
-
-    except Exception as e:
-        logger.error(f"Ошибка создания превью: {e}")
+    if not user_id:
+        logger.error("Не указан user_id для загрузки видео")
         return None
 
+    uploader = YouTubeUploader(credentials_file)
 
-def upload_to_youtube_scheduled(video_path, title, description, credentials_file, thumbnail_path, bpm, artist,
-                                publish_datetime_iso, playlist_name="music"):
-    try:
-        youtube = get_authenticated_service(credentials_file)
+    if not uploader.is_authorized(user_id):
+        logger.error(f"Пользователь {user_id} не авторизован")
+        return None
 
-        tags = [f"{bpm}bpm"]
-
-        # Получаем текущую дату в ISO формате для recordingDate
-        current_date = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
-
-        body = {
-            'snippet': {
-                'title': title,
-                'description': description,
-                'tags': tags,
-                'categoryId': '10',
-                'defaultLanguage': 'ru'
-            },
-            'status': {
-                'privacyStatus': 'private',
-                'publishAt': publish_datetime_iso,
-                'selfDeclaredMadeForKids': False,
-                'embeddable': True,
-                'caption': 'false'
-            },
-            'recordingDetails': {
-                'recordingDate': current_date,
-                'locationDescription': 'Студия звукозаписи'
-            }
-        }
-
-        media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-
-        insert_request = youtube.videos().insert(
-            part=','.join(body.keys()),
-            body=body,
-            media_body=media
-        )
-
-        video_id = None
-        response = None
-        error = None
-        retry = 0
-
-        while response is None:
-            try:
-                status, response = insert_request.next_chunk()
-                if response is not None:
-                    if 'id' in response:
-                        video_id = response['id']
-                        logger.info(f"Видео загружено с ID: {video_id}")
-                    else:
-                        raise Exception(f"Загрузка не удалась: {response}")
-            except HttpError as e:
-                if e.resp.status in [500, 502, 503, 504]:
-                    error = f"Ошибка сервера: {e}"
-                    retry += 1
-                    if retry > 3:
-                        raise Exception(error)
-                else:
-                    raise e
-
-        # Добавляем видео в плейлист
-        if video_id and playlist_name:
-            playlist_id = get_playlist_id_by_name(youtube, playlist_name)
-            if playlist_id:
-                add_video_to_playlist(youtube, video_id, playlist_id)
-            else:
-                logger.warning(f"Плейлист '{playlist_name}' не найден, видео не добавлено в плейлист")
-
-        if video_id and os.path.exists(thumbnail_path):
-            try:
-                youtube.thumbnails().set(
-                    videoId=video_id,
-                    media_body=MediaFileUpload(thumbnail_path)
-                ).execute()
-                logger.info("Превью загружено успешно")
-            except Exception as e:
-                logger.warning(f"Не удалось загрузить превью: {e}")
-
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        return video_url
-
-    except Exception as e:
-        logger.error(f"Ошибка загрузки на YouTube: {e}")
-        raise e
+    return uploader.upload_video(user_id, video_path, title, description, tags, privacy_status)
 
 
-def upload_to_youtube(video_path, title, description, credentials_file, thumbnail_path, bpm, artist,
-                      playlist_name="music"):
-    try:
-        youtube = get_authenticated_service(credentials_file)
+def is_authorized(credentials_file, user_id):
+    """Проверяет, авторизован ли пользователь"""
+    uploader = YouTubeUploader(credentials_file)
+    return uploader.is_authorized(user_id)
 
-        tags = [f"{bpm}bpm"]
 
-        # Получаем текущую дату в ISO формате для recordingDate
-        current_date = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
-
-        body = {
-            'snippet': {
-                'title': title,
-                'description': description,
-                'tags': tags,
-                'categoryId': '10',
-                'defaultLanguage': 'ru'
-            },
-            'status': {
-                'privacyStatus': 'public',
-                'selfDeclaredMadeForKids': False,
-                'embeddable': True,
-                'caption': 'false'
-            },
-            'recordingDetails': {
-                'recordingDate': current_date,
-                'locationDescription': 'Студия звукозаписи'
-            }
-        }
-
-        media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-
-        insert_request = youtube.videos().insert(
-            part=','.join(body.keys()),
-            body=body,
-            media_body=media
-        )
-
-        video_id = None
-        response = None
-        error = None
-        retry = 0
-
-        while response is None:
-            try:
-                status, response = insert_request.next_chunk()
-                if response is not None:
-                    if 'id' in response:
-                        video_id = response['id']
-                        logger.info(f"Видео загружено с ID: {video_id}")
-                    else:
-                        raise Exception(f"Загрузка не удалась: {response}")
-            except HttpError as e:
-                if e.resp.status in [500, 502, 503, 504]:
-                    error = f"Ошибка сервера: {e}"
-                    retry += 1
-                    if retry > 3:
-                        raise Exception(error)
-                else:
-                    raise e
-
-        # Добавляем видео в плейлист
-        if video_id and playlist_name:
-            playlist_id = get_playlist_id_by_name(youtube, playlist_name)
-            if playlist_id:
-                add_video_to_playlist(youtube, video_id, playlist_id)
-            else:
-                logger.warning(f"Плейлист '{playlist_name}' не найден, видео не добавлено в плейлист")
-
-        thumbnail_created = create_thumbnail(
-            thumbnail_path.replace('_thumbnail.jpg', '.jpg') if '_thumbnail' in thumbnail_path else thumbnail_path,
-            thumbnail_path,
-            bpm,
-            artist
-        )
-
-        if video_id and thumbnail_created and os.path.exists(thumbnail_created):
-            try:
-                youtube.thumbnails().set(
-                    videoId=video_id,
-                    media_body=MediaFileUpload(thumbnail_created)
-                ).execute()
-                logger.info("Превью загружено успешно")
-            except Exception as e:
-                logger.warning(f"Не удалось загрузить превью: {e}")
-
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        return video_url
-
-    except Exception as e:
-        logger.error(f"Ошибка загрузки на YouTube: {e}")
-        raise e
+def revoke_authorization(credentials_file, user_id):
+    """Отзывает авторизацию пользователя"""
+    uploader = YouTubeUploader(credentials_file)
+    return uploader.revoke_authorization(user_id)

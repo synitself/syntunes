@@ -15,7 +15,7 @@ load_dotenv()
 
 from processor import create_audio_visualizer, get_audio_metadata, extract_album_art, add_white_square_background, \
     apply_ultra_hard_threshold_effect
-from youtube_uploader import upload_to_youtube_scheduled
+from youtube_uploader import upload_to_youtube_scheduled, create_auth_url, complete_auth
 from bot_settings import *
 from settings import *
 from database import Database
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 (START_MENU, MAIN_MENU, EDIT_AUTHOR, EDIT_TITLE, EDIT_BPM, SETTINGS_MENU,
  TYPES_SETTINGS, ADD_TYPE_NAME, ADD_TYPE_TAGS, BEATMAKERS_SETTINGS,
- ADD_BEATMAKER_NAME, ADD_BEATMAKER_TAG, EDIT_PUBLISH_TIME) = range(13)
+ ADD_BEATMAKER_NAME, ADD_BEATMAKER_TAG, EDIT_PUBLISH_TIME, YOUTUBE_AUTH) = range(14)
 
 
 class SyntunesBot:
@@ -38,7 +38,6 @@ class SyntunesBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         username = update.effective_user.username
-
         self.db.add_user(user_id, username)
 
         if update.message:
@@ -76,7 +75,7 @@ class SyntunesBot:
             await audio_file.download_to_drive(audio_path)
 
             artist, title = get_audio_metadata(audio_path)
-            cover_path = extract_album_art(audio_path)
+            cover_path = extract_album_art(audio_path, user_dir)
 
             self.user_sessions[user_id] = {
                 'audio_path': audio_path,
@@ -107,15 +106,10 @@ class SyntunesBot:
         return MAIN_MENU
 
     def parse_collaborators_from_author_tag(self, author_tag, user_id):
-        """
-        Парсит тег автора, разделенный запятыми, исключает 'syn' и возвращает список коллабораторов
-        """
         if not author_tag:
             return []
-
         authors = [a.strip() for a in author_tag.split(',') if a.strip()]
         collaborators = [a for a in authors if a.lower() != 'syn']
-
         return collaborators
 
     def create_telegram_cover(self, image_path, output_path):
@@ -123,11 +117,9 @@ class SyntunesBot:
         img = Image.open(image_path).convert('RGB')
         img = add_white_square_background(img, 1080)
         processed_img = apply_ultra_hard_threshold_effect(img, 0)
-
         img_width, img_height = processed_img.size
         x = (1080 - img_width) // 2
         y = (1080 - img_height) // 2
-
         cover.paste(processed_img, (x, y))
         cover.save(output_path, 'JPEG', quality=95, optimize=True)
         return output_path
@@ -142,7 +134,6 @@ class SyntunesBot:
 
     async def show_audio_menu(self, update, context, user_id):
         session = self.user_sessions[user_id]
-
         keyboard = [
             [InlineKeyboardButton(
                 BUTTON_AUTHOR.format(
@@ -193,11 +184,11 @@ class SyntunesBot:
 
     async def show_settings_menu(self, query, context, user_id):
         publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
-
         keyboard = [
             [InlineKeyboardButton(BUTTON_TYPES_SETTINGS, callback_data="types_settings")],
             [InlineKeyboardButton(BUTTON_BEATMAKERS_SETTINGS, callback_data="beatmakers_settings")],
             [InlineKeyboardButton(BUTTON_PUBLISH_TIME.format(publish_time), callback_data="edit_publish_time")],
+            [InlineKeyboardButton(BUTTON_YOUTUBE_AUTH, callback_data="youtube_auth")],
             [InlineKeyboardButton(BUTTON_BACK_TO_START, callback_data="back_to_start")]
         ]
 
@@ -292,6 +283,7 @@ class SyntunesBot:
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.MARKDOWN
             )
+
             return START_MENU
 
         return START_MENU
@@ -306,6 +298,28 @@ class SyntunesBot:
             return await self.show_types_settings(query, context, user_id)
         elif data == "beatmakers_settings":
             return await self.show_beatmakers_settings(query, context, user_id)
+        elif data == "youtube_auth":
+            auth_url = create_auth_url(self.youtube_credentials, user_id)
+            if auth_url:
+                keyboard = [
+                    [InlineKeyboardButton("🔗 Авторизоваться в YouTube", url=auth_url)],
+                    [InlineKeyboardButton(BUTTON_BACK, callback_data="back_to_settings")]
+                ]
+
+                auth_message = await query.edit_message_text(
+                    text="Для загрузки видео на YouTube необходимо авторизоваться.\n\n"
+                         "Нажмите кнопку ниже для авторизации, затем скопируйте полученный код и отправьте его мне текстом.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+
+                context.user_data['auth_message_id'] = auth_message.message_id
+                context.user_data['current_state'] = YOUTUBE_AUTH
+                return YOUTUBE_AUTH
+            else:
+                await query.answer(ERROR_YOUTUBE_AUTH, show_alert=True)
+                return SETTINGS_MENU
+
         elif data == "edit_publish_time":
             await query.edit_message_text(
                 text=EDIT_PUBLISH_TIME_PROMPT,
@@ -316,6 +330,7 @@ class SyntunesBot:
             context.user_data['prompt_message_id'] = query.message.message_id
             context.user_data['current_state'] = EDIT_PUBLISH_TIME
             return EDIT_PUBLISH_TIME
+
         elif data == "back_to_settings":
             return await self.show_settings_menu(query, context, user_id)
         elif data == "back_to_start":
@@ -329,7 +344,9 @@ class SyntunesBot:
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.MARKDOWN
             )
+
             return START_MENU
+
         elif data == "add_type":
             msg = await query.edit_message_text(
                 text=ADD_TYPE_NAME_PROMPT,
@@ -340,6 +357,7 @@ class SyntunesBot:
             context.user_data['prompt_message_id'] = msg.message_id
             context.user_data['current_state'] = ADD_TYPE_NAME
             return ADD_TYPE_NAME
+
         elif data == "add_beatmaker":
             msg = await query.edit_message_text(
                 text=ADD_BEATMAKER_NAME_PROMPT,
@@ -372,6 +390,7 @@ class SyntunesBot:
             except:
                 pass
             return ConversationHandler.END
+
         elif data == "edit_author":
             await query.edit_message_caption(
                 caption=EDIT_AUTHOR_PROMPT,
@@ -380,6 +399,7 @@ class SyntunesBot:
 
             context.user_data['current_state'] = EDIT_AUTHOR
             return EDIT_AUTHOR
+
         elif data == "edit_title":
             await query.edit_message_caption(
                 caption=EDIT_TITLE_PROMPT,
@@ -388,6 +408,7 @@ class SyntunesBot:
 
             context.user_data['current_state'] = EDIT_TITLE
             return EDIT_TITLE
+
         elif data == "edit_bpm":
             await query.edit_message_caption(
                 caption=EDIT_BPM_PROMPT,
@@ -396,18 +417,23 @@ class SyntunesBot:
 
             context.user_data['current_state'] = EDIT_BPM
             return EDIT_BPM
+
         elif data == "select_type":
             return await self.show_type_selection(query, context, user_id)
+
         elif data == "create_video":
             return await self.create_video(query, context, user_id)
+
         elif data == "back_to_audio":
             await self.update_audio_menu(query, context, user_id)
             return MAIN_MENU
+
         elif data.startswith("type_"):
             type_name = data[5:]
             session['current_type'] = type_name
             await self.update_audio_menu(query, context, user_id)
             return MAIN_MENU
+
         elif data == "go_to_type_settings":
             try:
                 await query.message.delete()
@@ -425,8 +451,10 @@ class SyntunesBot:
             new_query.edit_message_text = msg.edit_text
 
             return await self.show_types_settings(new_query, context, user_id)
+
         elif data == "upload_youtube":
             return await self.upload_to_youtube(query, context, user_id)
+
         elif data == "recreate_video":
             return await self.create_video(query, context, user_id)
 
@@ -434,7 +462,6 @@ class SyntunesBot:
 
     async def update_audio_menu(self, query, context, user_id):
         session = self.user_sessions[user_id]
-
         keyboard = [
             [InlineKeyboardButton(
                 BUTTON_AUTHOR.format(
@@ -477,6 +504,29 @@ class SyntunesBot:
 
         current_state = context.user_data.get('current_state')
 
+        if current_state == YOUTUBE_AUTH:
+            if complete_auth(self.youtube_credentials, user_id, text):
+                auth_message_id = context.user_data.get('auth_message_id')
+                if auth_message_id:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=user_id,
+                            message_id=auth_message_id
+                        )
+                    except:
+                        pass
+
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="✅ YouTube авторизация успешно завершена! Теперь вы можете загружать видео на свой канал.",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton(BUTTON_BACK, callback_data="back_to_settings")]])
+                )
+                return SETTINGS_MENU
+            else:
+                await self.send_temp_message(context, user_id, YOUTUBE_AUTH_ERROR)
+                return YOUTUBE_AUTH
+
         if user_id in self.user_sessions:
             session = self.user_sessions[user_id]
 
@@ -487,6 +537,7 @@ class SyntunesBot:
                 else:
                     await self.send_temp_message(context, user_id, ERROR_INVALID_INPUT)
                 return MAIN_MENU
+
             elif current_state == EDIT_TITLE:
                 if len(text) <= MAX_TITLE_LENGTH:
                     session['current_title'] = text
@@ -494,6 +545,7 @@ class SyntunesBot:
                 else:
                     await self.send_temp_message(context, user_id, ERROR_INVALID_INPUT)
                 return MAIN_MENU
+
             elif current_state == EDIT_BPM:
                 try:
                     bpm = float(text)
@@ -509,7 +561,6 @@ class SyntunesBot:
         if current_state == EDIT_PUBLISH_TIME:
             if self.validate_time_format(text):
                 self.db.set_scheduled_publish_time(user_id, text)
-
                 try:
                     await context.bot.delete_message(
                         chat_id=user_id,
@@ -523,10 +574,10 @@ class SyntunesBot:
             else:
                 await self.send_temp_message(context, user_id, INVALID_TIME_FORMAT)
                 return EDIT_PUBLISH_TIME
+
         elif current_state == ADD_TYPE_NAME:
             if len(text) <= MAX_TYPE_NAME_LENGTH:
                 context.user_data['new_type_name'] = text
-
                 try:
                     await context.bot.delete_message(
                         chat_id=user_id,
@@ -548,11 +599,11 @@ class SyntunesBot:
             else:
                 await self.send_temp_message(context, user_id, ERROR_INVALID_INPUT)
                 return ADD_TYPE_NAME
+
         elif current_state == ADD_TYPE_TAGS:
             if len(text) <= MAX_TAGS_LENGTH:
                 type_name = context.user_data.get('new_type_name')
                 self.db.add_user_type(user_id, type_name, text)
-
                 try:
                     await context.bot.delete_message(
                         chat_id=user_id,
@@ -574,10 +625,10 @@ class SyntunesBot:
             else:
                 await self.send_temp_message(context, user_id, ERROR_INVALID_INPUT)
                 return ADD_TYPE_TAGS
+
         elif current_state == ADD_BEATMAKER_NAME:
             if len(text) <= MAX_BEATMAKER_NAME_LENGTH:
                 context.user_data['new_beatmaker_name'] = text
-
                 try:
                     await context.bot.delete_message(
                         chat_id=user_id,
@@ -599,11 +650,11 @@ class SyntunesBot:
             else:
                 await self.send_temp_message(context, user_id, ERROR_INVALID_INPUT)
                 return ADD_BEATMAKER_NAME
+
         elif current_state == ADD_BEATMAKER_TAG:
             if len(text) <= MAX_BEATMAKER_TAG_LENGTH:
                 beatmaker_name = context.user_data.get('new_beatmaker_name')
                 self.db.add_user_beatmaker(user_id, beatmaker_name, text)
-
                 try:
                     await context.bot.delete_message(
                         chat_id=user_id,
@@ -629,56 +680,47 @@ class SyntunesBot:
         return MAIN_MENU
 
     def validate_time_format(self, time_str):
-        """Проверяет формат времени ЧЧ:ММ"""
         try:
             time_parts = time_str.split(':')
             if len(time_parts) != 2:
                 return False
-
             hours = int(time_parts[0])
             minutes = int(time_parts[1])
-
             return 0 <= hours <= 23 and 0 <= minutes <= 59
         except ValueError:
             return False
 
     def convert_msk_to_utc_iso(self, time_str, user_id):
-        """Конвертирует время МСК в UTC ISO формат для следующего доступного дня"""
         try:
             msk_tz = pytz.timezone('Europe/Moscow')
             utc_tz = pytz.UTC
 
-            # Получаем следующую доступную дату
             available_date_str = self.db.get_next_available_date(user_id, time_str)
             available_date = datetime.strptime(available_date_str, '%Y-%m-%d').date()
 
-            # Парсим время
             hours, minutes = map(int, time_str.split(':'))
 
-            # Создаем datetime объект для доступного дня в МСК
             msk_datetime = msk_tz.localize(
                 datetime.combine(available_date, datetime.min.time().replace(hour=hours, minute=minutes)))
 
-            # Конвертируем в UTC
             utc_datetime = msk_datetime.astimezone(utc_tz)
 
-            # Сохраняем информацию о запланированной публикации
             video_title = f"{self.user_sessions[user_id]['current_artist']} - {self.user_sessions[user_id]['current_title']}"
             self.db.add_scheduled_upload(user_id, video_title, available_date_str, time_str)
 
-            # Возвращаем в ISO формате
             return utc_datetime.strftime('%Y-%m-%dT%H:%M:%S.000Z'), available_date_str
+
         except Exception as e:
             logger.error(f"Ошибка конвертации времени: {e}")
             return None, None
 
     async def show_settings_menu_after_time_update(self, context, user_id):
         publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
-
         keyboard = [
             [InlineKeyboardButton(BUTTON_TYPES_SETTINGS, callback_data="types_settings")],
             [InlineKeyboardButton(BUTTON_BEATMAKERS_SETTINGS, callback_data="beatmakers_settings")],
             [InlineKeyboardButton(BUTTON_PUBLISH_TIME.format(publish_time), callback_data="edit_publish_time")],
+            [InlineKeyboardButton(BUTTON_YOUTUBE_AUTH, callback_data="youtube_auth")],
             [InlineKeyboardButton(BUTTON_BACK_TO_START, callback_data="back_to_start")]
         ]
 
@@ -740,7 +782,6 @@ class SyntunesBot:
 
     async def create_video(self, query, context, user_id):
         session = self.user_sessions[user_id]
-
         processing_msg = await query.edit_message_caption(caption=VIDEO_CREATING)
         session['processing_message_id'] = processing_msg.message_id
 
@@ -770,7 +811,6 @@ class SyntunesBot:
             description = self.generate_youtube_description(session, user_id)
             session['youtube_description'] = description
 
-            # Получаем время публикации пользователя
             user_publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
             publish_datetime_iso, scheduled_date = self.convert_msk_to_utc_iso(user_publish_time, user_id)
             session['publish_datetime_iso'] = publish_datetime_iso
@@ -829,21 +869,25 @@ class SyntunesBot:
                 None,
                 upload_to_youtube_scheduled,
                 video_path, title, description, self.youtube_credentials, thumbnail_path,
-                session['current_bpm'], session['current_artist'], publish_datetime_iso
+                session['current_bpm'], session['current_artist'], publish_datetime_iso, user_id
             )
 
-            user_publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
-            scheduled_date = session['scheduled_date']
-            success_text = YOUTUBE_SUCCESS_SCHEDULED.format(
-                video_url,
-                session['current_artist'],
-                session['current_title'],
-                scheduled_date,
-                user_publish_time
-            )
+            if video_url:
+                user_publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
+                scheduled_date = session['scheduled_date']
 
-            await query.edit_message_caption(caption=success_text)
-            self.cleanup_session(user_id)
+                success_text = YOUTUBE_SUCCESS_SCHEDULED.format(
+                    video_url,
+                    session['current_artist'],
+                    session['current_title'],
+                    scheduled_date,
+                    user_publish_time
+                )
+
+                await query.edit_message_caption(caption=success_text)
+                self.cleanup_session(user_id)
+            else:
+                await query.edit_message_caption(caption=ERROR_YOUTUBE_NOT_AUTHORIZED)
 
         except Exception as e:
             logger.error(f"Ошибка загрузки на YouTube: {e}")
@@ -856,7 +900,7 @@ class SyntunesBot:
         description_parts.append(f"{session['current_bpm']} BPM")
         description_parts.append(f"")
         description_parts.append(f"τειεgrαm : @synworks")
-        # Новая логика: парсим коллабораторов из тега автора
+
         collaborators = self.parse_collaborators_from_author_tag(session['current_artist'], user_id)
 
         if collaborators:
@@ -941,6 +985,10 @@ class SyntunesBot:
                     CallbackQueryHandler(self.handle_audio_callback)
                 ],
                 EDIT_PUBLISH_TIME: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input),
+                    CallbackQueryHandler(self.handle_settings_callback)
+                ],
+                YOUTUBE_AUTH: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input),
                     CallbackQueryHandler(self.handle_settings_callback)
                 ],
