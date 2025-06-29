@@ -862,22 +862,24 @@ class SyntunesBot:
             video_path = session['video_path']
             title = self.generate_youtube_title(session)
             description = session['youtube_description']
-            thumbnail_path = session['video_path'].replace('.mp4', '_thumbnail.jpg')
-            publish_datetime_iso = session['publish_datetime_iso']
 
-            video_url = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 upload_to_youtube_scheduled,
-                video_path, title, description, self.youtube_credentials, thumbnail_path,
-                session['current_bpm'], session['current_artist'], publish_datetime_iso, user_id
+                video_path,
+                title,
+                description,
+                None,
+                "private",
+                user_id
             )
 
-            if video_url:
+            if result:
                 user_publish_time = self.db.get_scheduled_publish_time(user_id) or DEFAULT_PUBLISH_TIME
                 scheduled_date = session['scheduled_date']
 
                 success_text = YOUTUBE_SUCCESS_SCHEDULED.format(
-                    video_url,
+                    result['video_url'],
                     session['current_artist'],
                     session['current_title'],
                     scheduled_date,
