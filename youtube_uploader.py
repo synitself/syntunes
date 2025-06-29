@@ -31,7 +31,6 @@ class YouTubeUploader:
             auth_url, _ = flow.authorization_url(
                 prompt='consent',
                 access_type='offline',
-                include_granted_scopes='true',
                 state=str(user_id)
             )
 
@@ -112,6 +111,51 @@ class YouTubeUploader:
 
         return creds
 
+    def upload_thumbnail(self, user_id, video_id, thumbnail_path):
+        """Загружает обложку для видео"""
+        try:
+            creds = self.get_credentials(user_id)
+            if not creds:
+                logger.error(f"Нет действительных учетных данных для пользователя {user_id}")
+                return False
+
+            youtube = build('youtube', 'v3', credentials=creds)
+
+            if not os.path.exists(thumbnail_path):
+                logger.error(f"Файл обложки не найден: {thumbnail_path}")
+                return False
+
+            # Проверяем размер файла (максимум 2MB)
+            file_size = os.path.getsize(thumbnail_path)
+            if file_size > 2 * 1024 * 1024:  # 2MB в байтах
+                logger.error(f"Файл обложки слишком большой: {file_size} байт (максимум 2MB)")
+                return False
+
+            media = MediaFileUpload(
+                thumbnail_path,
+                mimetype='image/jpeg',
+                resumable=True
+            )
+
+            request = youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=media
+            )
+
+            response = request.execute()
+            logger.info(f"Обложка успешно загружена для видео {video_id}")
+            return True
+
+        except HttpError as e:
+            if e.resp.status == 400:
+                logger.error(f"Ошибка загрузки обложки: аккаунт не верифицирован или неподдерживаемый формат")
+            else:
+                logger.error(f"HTTP ошибка при загрузке обложки: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка загрузки обложки: {e}")
+            return False
+
     def upload_video(self, user_id, video_path, title, description="", tags=None, privacy_status="private"):
         """Загружает видео на YouTube"""
         try:
@@ -181,6 +225,18 @@ class YouTubeUploader:
                 video_id = response.get('id')
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
                 logger.info(f"Видео успешно загружено: {video_url}")
+
+                # Пытаемся загрузить обложку
+                thumbnail_path = video_path.replace('.mp4', '_thumbnail.jpg')
+                if os.path.exists(thumbnail_path):
+                    thumbnail_success = self.upload_thumbnail(user_id, video_id, thumbnail_path)
+                    if thumbnail_success:
+                        logger.info(f"Обложка успешно установлена для видео {video_id}")
+                    else:
+                        logger.warning(f"Не удалось установить обложку для видео {video_id}")
+                else:
+                    logger.warning(f"Файл обложки не найден: {thumbnail_path}")
+
                 return {
                     'video_id': video_id,
                     'video_url': video_url,
